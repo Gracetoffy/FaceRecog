@@ -1,23 +1,36 @@
 from deepface import DeepFace
+from ultralytics import YOLO
+
 import cv2
-import matplotlib.pyplot as plt
 
-# Load Image
-img_path = "IMG_20241119_230540_488.jpg"  # Replace with your image path
 
-# Detect Faces
-detected_faces = DeepFace.extract_faces(img_path, detector_backend='retinaface',enforce_detection=False)
-face = detected_faces[0]["face"]
+# WEB cam
+cap = cv2.VideoCapture(0)
+model = YOLO("yolov8n-face.pt")
 
-# Convert back to RGB (since OpenCV loads images in BGR format)
-image = cv2.imread(img_path)
-image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
 
-# Plotting the Detected Face
-for i, face in enumerate(detected_faces):
-    face_img = face["face"]  # Get face image
-    plt.subplot(1, len(detected_faces), i + 1)  # Arrange multiple faces in one row
-    plt.imshow(face_img)
-    plt.axis("off")
-    plt.title(f"Face {i + 1}")
-plt.show()
+    results = model(frame)
+    for result in results:
+        for box in result.boxes.xyxy:
+            box = box.int().tolist()
+            print(box)
+            if len(box) == 4:
+                x1, y1, x2, y2 = box
+            else:
+                print('No face detected in', box)
+            frame = cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0),2)
+   
+   
+    cv2.imshow('Real-time face detection', frame)
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+cap.release()
+cv2.destroyAllWindows()
+
+
+
+
