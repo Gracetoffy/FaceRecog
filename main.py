@@ -1,130 +1,96 @@
 import os
 import cv2
 import numpy as np
-import mediapipe as mp
-from facenet_pytorch import InceptionResnetV1
+import albumentations as A
 from deepface import DeepFace
-import pickle
 
-# Use webcam to detect face
 
-mp_face_detection = mp.solutions.face_detection
-face_detection = mp_face_detection.FaceDetection( model_selection=0, min_detection_confidence=0.7 )
-cap = cv2.VideoCapture(0)
 
-# Use webcam to detect face and extract face embeddings
-facenet = InceptionResnetV1(pretrained='vggface2').eval()
+test_image_path = "facees.jpg"  #  test image
+faces_db_path = "augmented_faces" # folder containing known faces
 
-#COSINE SIMILRITY 
-def cosine_similarity(emb1, emb2):
-    return np.dot(emb1, emb2.T)/(np.linalg.norm(emb1)*np.linalg.norm(emb2))
+#DATA AUGMENTATION
 
-# to get embedding 
-def get_embedding(face):
-    try:
-        embedding=DeepFace.represent(face, model_name='Facenet',enforce_detection=False)
-        return np.array(embedding[0]['embedding'])
-    except Exception as e:
-        print('Error extracting face embedding:', e)
-        return None
+augmented_dir = "augmented_faces"
+
+augmentations = A.Compose([
+    A.HorizontalFlip(p=0.5),
+    A.RandomBrightnessContrast(p=0.5),
+    A.GaussNoise(p=0.5),
+    A.Rotate(limit=15, p=0.3),
+    A.Blur(blur_limit=3, p=0.3)
+])
+
+if not os.path.exists(augmented_dir):
+    os.makedirs(augmented_dir)
+
+for filename in os.listdir(faces_db_path):
+    if filename.endswith('.jpg')or filename.endswith('.png'):
+        img_path = os.path.join(faces_db_path,filename)
+        image = cv2.imread(img_path)
+
+        if image is None:
+            continue
+
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+    for i in range(3):
+        augumented= augmentations(image=image_rgb)['image']
+        augumented_bgr = cv2.cvtColor(augumented,cv2.COLOR_RGB2BGR)
+
+        aug_img_name= f"{os.path.splitext(filename)[0]}_aug{i}.jpg"
+        cv2.imwrite(os.path.join(augmented_dir, aug_img_name), augumented_bgr)
+
+    print('Data augmentation completed')
+
+# Detect faces in the test image
+faces = DeepFace.extract_faces(img_path=test_image_path, detector_backend="retinaface", enforce_detection=False)
+
+if len(faces) == 0:
+    print("No faces detected in the test image.")
+else:
+    print(f"{len(faces)} face(s) detected in the test image.")
+
+# Iterate over each detected face
+for idx, face_info in enumerate(faces):
+    face = face_info["face"]
     
-#save known faces embeddings
-def save_known_faces(known_faces, folder="known_faces.pkl"):
-    with open(folder,"wb") as f:
-        pickle.dump(known_faces, f)
-
-#load known faces embeddings
-def load_faces_from_file(folder="known_faces.pkl"):
-    if not os.path.exists(folder):  
-         print("⚠️ No known faces file found. Creating a new one.")
-         return{}
-  # Return an empty dictionary if the file doesn't exist
-
-    with open(folder, "rb") as f:
-        return pickle.load(f)
-
-        known_faces = pickle.load(f)
-        
+    # Get bounding box coordinates (optional)
+    facial_area = face_info.get("facial_area", {})
+    x, y, w, h = facial_area.get("x", 0), facial_area.get("y", 0), facial_area.get("w", 0), facial_area.get("h", 0)
 
 
-def load_known_faces(folder="faces"):
-    known_faces = load_faces_from_file()
-    if known_faces:
-        print("Known faces loaded from file")
-        return known_faces
-    face_counts={}
-    known_faces={}
-    for filename in os.listdir(folder):
-        if filename.endswith(".jpg") or filename.endswith(".png"):
-            name = "-".join(os.path.splitext(filename)[0].split("_")[:-1])
-            img_path = os.path.join(folder, filename)
-            img = cv2.imread(img_path)
-            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            results= face_detection.process(img_rgb)
-            if results.detections:
-                for detection in results.detections:
-                    bboxC= detection.location_data.relative_bounding_box
-                    h,w,_ = img.shape
-                    x,y,w_box,h_box = int(bboxC.xmin*w), int(bboxC.ymin*h), int(bboxC.width*w), int(bboxC.height*h)
-                    face_crop = img[y:y+h_box, x:x+w_box] 
-                    if face_crop.shape[0]>0 and face_crop.shape[1]>0:
-                        try:
-                         embedding = DeepFace.represent(face_crop, model_name='Facenet',enforce_detection=False)[0]['embedding']
-                         embedding = np.array(embedding)
-                         if name in known_faces:
-                            known_faces[name] += embedding
-                            face_counts[name] += 1
-                         else:
-                          known_faces[name] = embedding
-                          face_counts[name] = 1
-                          print(f"Embedding for {name} saved")
-                        except Exception as e:
-                            print('Error extracting face embedding:', e)
-    for name in known_faces.keys():
-        known_faces[name] /= face_counts[name]
-    save_known_faces(known_faces)
-    known_faces = load_known_faces()
-                       
+    # Save each detected face temporarily
+    face_path = f"temp_face_{idx + 1}.jpg"
+    cv2.imwrite(face_path, face)
 
-    return known_faces
-known_faces = load_known_faces()
-print(known_faces)
+    # Perform face recognition for the detected face
+    try:
+        results = DeepFace.find(img_path=face_path, db_path=faces_db_path, model_name="ArcFace",distance_metric='cosine', enforce_detection=False)
+    
+        if results and not results[0].empty:
+            print(f"Matches for Face {idx + 1}:")
+            
+            # Iterate through all matches
+            for _, row in results[0].iterrows():
+                matched_identity = row["identity"]
+                matched_name = os.path.splitext(os.path.basename(matched_identity))[0]
+                print(f"  - Matched with: {matched_name}")
 
+                # Draw rectangle & label on original image
+                cv2.rectangle(image, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                cv2.putText(image, matched_name, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-while cap.isOpened():
-    ret,frame = cap.read()
-    if not ret:
-        break
-    frame_rgb = cv2.cvtColor(frame.copy(), cv2.COLOR_BGR2RGB)
-    results = face_detection.process(frame_rgb)
+        else:
+            print(f"Face {idx + 1} not matched with any image in the database.")
 
-    # rectangles on face
-    if results.detections:
-        for detection in results.detections:
-            bboxC= detection.location_data.relative_bounding_box
-            h,w,_ = frame.shape
-            x,y,w,h = int(bboxC.xmin*w), int(bboxC.ymin*h), int(bboxC.width*w), int(bboxC.height*h)
-            face = frame[y:y+h, x:x+w]
-            cv2.rectangle(frame, (x,y), (x+w, y+h), (0,255,0), 2)
+    except Exception as e:
+        print(f"Error in face matching: {e}")
 
-            if face.shape[0]>0 and face.shape[1]>0:
-                embedding = get_embedding(face)
+    # Remove temporary face images
+    os.remove(face_path)
 
-                best_match="Unknown"
-                best_score=0.6
-                for name, know_embedding in known_faces.items():
-                    similarity= cosine_similarity(embedding, know_embedding)
-
-                    if similarity>best_score:
-                         best_score= similarity
-                         best_match= name
-
-                cv2.rectangle(frame, (x,y), (x+w, y+h), (0,255,0), 2)
-                cv2.putText(frame, best_match, (x,y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (36,255,12), 2)
-                cv2.imshow('Face Recognition', frame)
-  
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
-cap.release()
+# Show the image with labeled faces
+cv2.imshow("Identified Faces", image)
+cv2.waitKey(0)
 cv2.destroyAllWindows()
-
